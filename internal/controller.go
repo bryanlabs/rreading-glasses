@@ -141,7 +141,10 @@ type getter interface {
 func NewUpstream(host string, proxy string) (*http.Client, error) {
 	upstream := &http.Client{
 		Transport: throttledTransport{
-			ticker: time.NewTicker(time.Second / 3),
+			// 30 req/sec (was 3). Hardcover GraphQL handles this load comfortably
+			// and many cold-path book lookups chain 3-5 sequential queries; the
+			// old 333ms throttle alone was adding 1-2s per cold load.
+			ticker: time.NewTicker(time.Second / 30),
 			RoundTripper: ScopedTransport{
 				Host:         host,
 				RoundTripper: errorProxyTransport{http.DefaultTransport},
@@ -185,8 +188,8 @@ func NewController(cache cache[[]byte], getter getter, persister persister, reg 
 		c.persister = persister
 	}
 
-	c.refreshG.SetLimit(30)
-	c.workG.SetLimit(25)    // Sure why not.
+	c.refreshG.SetLimit(100)
+	c.workG.SetLimit(50)
 
 	return c, nil
 }
