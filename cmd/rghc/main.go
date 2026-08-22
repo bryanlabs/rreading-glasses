@@ -70,7 +70,7 @@ func (s *server) Run() error {
 
 	hcClient := &http.Client{Transport: hcTransport}
 
-	gql, err := internal.NewBatchedGraphQLClient("https://api.hardcover.app/v1/graphql", hcClient, time.Second, 25 /* Not sure about this */, reg)
+	gql, err := internal.NewBatchedGraphQLClient("https://api.hardcover.app/v1/graphql", hcClient, time.Second, 5 /* Hardcover caps top-level queries per request at 5; 6+ returns top_level_query_limit_exceeded. Verified 2026-08-22 */, reg)
 	if err != nil {
 		return err
 	}
