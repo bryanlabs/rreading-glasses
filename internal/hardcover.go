@@ -260,7 +260,7 @@ func mapHardcoverToWorkResource(ctx context.Context, edition hardcover.EditionIn
 		Format:             edition.Edition_format,
 		EditionInformation: edition.Edition_information, // TODO: Is this used anywhere?
 		Publisher:          edition.Publisher.Name,      // TODO: Ignore books without publishers?
-		ImageURL:           strings.ReplaceAll(string(work.Cached_image), `"`, ``),
+		ImageURL:           coverFromEdition(edition.Images, work.Cached_image),
 		IsEbook:            edition.Edition_format == "ebook" || edition.Edition_format == "Kindle Edition",
 		NumPages:           edition.Pages,
 		RatingCount:        work.Ratings_count,
@@ -579,6 +579,19 @@ func (g *HCGetter) GetSeries(ctx context.Context, seriesID int64) (*SeriesResour
 	}
 
 	return seriesRsc, nil
+}
+
+// coverFromEdition prefers the edition's cover image (which Hardcover populates
+// on the editions.images relation) and falls back to the work's cached_image.
+// The cached_image field is frequently empty for newer works even when a real
+// cover exists on the edition, so the edition images must be checked first.
+func coverFromEdition(images []hardcover.EditionInfoImages, cached json.RawMessage) string {
+	for _, img := range images {
+		if strings.TrimSpace(img.Url) != "" {
+			return img.Url
+		}
+	}
+	return strings.ReplaceAll(string(cached), `"`, ``)
 }
 
 func hcReleaseDate(d string) string {

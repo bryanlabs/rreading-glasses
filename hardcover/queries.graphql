@@ -21,6 +21,9 @@ fragment EditionInfo on editions {
   users_read_count
   book_id
   score
+  images {
+    url
+  }
 }
 
 fragment Contributions on contributions {

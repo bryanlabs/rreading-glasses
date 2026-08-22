@@ -612,6 +612,8 @@ type EditionInfo struct {
 	Users_read_count     int64                          `json:"users_read_count"`
 	Book_id              int64                          `json:"book_id"`
 	Score                int64                          `json:"score"`
+	// An array relationship
+	Images []EditionInfoImages `json:"images"`
 }
 
 // GetId returns EditionInfo.Id, and is useful for accessing the field via an interface.
@@ -664,6 +666,20 @@ func (v *EditionInfo) GetBook_id() int64 { return v.Book_id }
 
 // GetScore returns EditionInfo.Score, and is useful for accessing the field via an interface.
 func (v *EditionInfo) GetScore() int64 { return v.Score }
+
+// GetImages returns EditionInfo.Images, and is useful for accessing the field via an interface.
+func (v *EditionInfo) GetImages() []EditionInfoImages { return v.Images }
+
+// EditionInfoImages includes the requested fields of the GraphQL type images.
+// The GraphQL type's documentation follows.
+//
+// columns and relationships of "images"
+type EditionInfoImages struct {
+	Url string `json:"url"`
+}
+
+// GetUrl returns EditionInfoImages.Url, and is useful for accessing the field via an interface.
+func (v *EditionInfoImages) GetUrl() string { return v.Url }
 
 // EditionInfoLanguageLanguages includes the requested fields of the GraphQL type languages.
 // The GraphQL type's documentation follows.
@@ -1094,6 +1110,11 @@ func (v *GetEditionEditions_by_pkEditions) GetBook_id() int64 { return v.Edition
 // GetScore returns GetEditionEditions_by_pkEditions.Score, and is useful for accessing the field via an interface.
 func (v *GetEditionEditions_by_pkEditions) GetScore() int64 { return v.EditionInfo.Score }
 
+// GetImages returns GetEditionEditions_by_pkEditions.Images, and is useful for accessing the field via an interface.
+func (v *GetEditionEditions_by_pkEditions) GetImages() []EditionInfoImages {
+	return v.EditionInfo.Images
+}
+
 func (v *GetEditionEditions_by_pkEditions) UnmarshalJSON(b []byte) error {
 
 	if string(b) == "null" {
@@ -1155,6 +1176,8 @@ type __premarshalGetEditionEditions_by_pkEditions struct {
 	Book_id int64 `json:"book_id"`
 
 	Score int64 `json:"score"`
+
+	Images []EditionInfoImages `json:"images"`
 }
 
 func (v *GetEditionEditions_by_pkEditions) MarshalJSON() ([]byte, error) {
@@ -1186,6 +1209,7 @@ func (v *GetEditionEditions_by_pkEditions) __premarshalJSON() (*__premarshalGetE
 	retval.Users_read_count = v.EditionInfo.Users_read_count
 	retval.Book_id = v.EditionInfo.Book_id
 	retval.Score = v.EditionInfo.Score
+	retval.Images = v.EditionInfo.Images
 	return &retval, nil
 }
 
@@ -1730,6 +1754,11 @@ func (v *GetWorkBooks_by_pkBooksEditions) GetBook_id() int64 { return v.EditionI
 // GetScore returns GetWorkBooks_by_pkBooksEditions.Score, and is useful for accessing the field via an interface.
 func (v *GetWorkBooks_by_pkBooksEditions) GetScore() int64 { return v.EditionInfo.Score }
 
+// GetImages returns GetWorkBooks_by_pkBooksEditions.Images, and is useful for accessing the field via an interface.
+func (v *GetWorkBooks_by_pkBooksEditions) GetImages() []EditionInfoImages {
+	return v.EditionInfo.Images
+}
+
 func (v *GetWorkBooks_by_pkBooksEditions) UnmarshalJSON(b []byte) error {
 
 	if string(b) == "null" {
@@ -1789,6 +1818,8 @@ type __premarshalGetWorkBooks_by_pkBooksEditions struct {
 	Book_id int64 `json:"book_id"`
 
 	Score int64 `json:"score"`
+
+	Images []EditionInfoImages `json:"images"`
 }
 
 func (v *GetWorkBooks_by_pkBooksEditions) MarshalJSON() ([]byte, error) {
@@ -1819,6 +1850,7 @@ func (v *GetWorkBooks_by_pkBooksEditions) __premarshalJSON() (*__premarshalGetWo
 	retval.Users_read_count = v.EditionInfo.Users_read_count
 	retval.Book_id = v.EditionInfo.Book_id
 	retval.Score = v.EditionInfo.Score
+	retval.Images = v.EditionInfo.Images
 	return &retval, nil
 }
 
@@ -2346,6 +2378,9 @@ fragment EditionInfo on editions {
 	users_read_count
 	book_id
 	score
+	images {
+		url
+	}
 }
 fragment WorkInfo on books {
 	id
@@ -2586,6 +2621,9 @@ fragment EditionInfo on editions {
 	users_read_count
 	book_id
 	score
+	images {
+		url
+	}
 }
 fragment DefaultEditions on books {
 	id
