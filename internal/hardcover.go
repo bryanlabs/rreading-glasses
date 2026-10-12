@@ -282,6 +282,16 @@ func mapHardcoverToWorkResource(ctx context.Context, edition hardcover.EditionIn
 		return workResource{}, err
 	}
 
+	// Readarr monitors the edition with the highest rating votes times rating.
+	// Every edition carries the work's ratings, so they all tie and the
+	// lowest edition ID wins, which is often a translation. One extra vote on
+	// the best edition breaks the tie in its favor.
+	bestBookID := bestHardcoverEdition(work.DefaultEditions, author.Id)
+	if edition.Id == bestBookID {
+		bookRsc.RatingCount++
+		bookRsc.RatingSum = int64(float64(bookRsc.RatingCount) * work.Rating)
+	}
+
 	authorDescription := "N/A" // Must be set?
 	if author.Bio != "" {
 		authorDescription = author.Bio
@@ -310,7 +320,7 @@ func mapHardcoverToWorkResource(ctx context.Context, edition hardcover.EditionIn
 		FullTitle:      workFullTitle,
 		ShortTitle:     workTitle,
 		ForeignID:      work.Id,
-		BestBookID:     bestHardcoverEdition(work.DefaultEditions, author.Id),
+		BestBookID:     bestBookID,
 		URL:            "https://hardcover.app/books/" + work.Slug,
 		ReleaseDate:    hcReleaseDate(work.Release_date),
 		ReleaseDateRaw: work.Release_date,

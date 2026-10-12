@@ -269,7 +269,7 @@ func TestGetBookDataIntegrity(t *testing.T) {
 		}).AnyTimes()
 
 	cache := newMemoryCache()
-	getter, err := NewHardcoverGetter(cache, gql)
+	getter, err := NewHardcoverGetter(cache, gql, true)
 	require.NoError(t, err)
 
 	ctrl, err := NewController(cache, getter, nil, nil)
@@ -355,7 +355,7 @@ func TestHardcoverIntegration(t *testing.T) {
 	gql, err := NewBatchedGraphQLClient("https://api.hardcover.app/v1/graphql", hcClient, time.Second, 25, nil)
 	require.NoError(t, err)
 
-	getter, err := NewHardcoverGetter(cache, gql)
+	getter, err := NewHardcoverGetter(cache, gql, true)
 	require.NoError(t, err)
 
 	ctrl, err := NewController(cache, getter, nil, nil)
@@ -591,4 +591,34 @@ func TestHCReleaseDate(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestBestEditionWinsPopularity(t *testing.T) {
+	author := hardcover.Contributions{
+		Author: hardcover.ContributionsAuthorAuthors{AuthorInfo: hardcover.AuthorInfo{Id: 7, Name: "Joseph Campbell"}},
+	}
+	work := hardcover.WorkInfo{
+		Id:            187208,
+		Title:         "The Hero with a Thousand Faces",
+		Rating:        3.9,
+		Ratings_count: 80,
+		DefaultEditions: hardcover.DefaultEditions{
+			Contributions: []hardcover.DefaultEditionsContributions{{Contributions: author}},
+			Default_cover_edition: hardcover.DefaultEditionsDefault_cover_editionEditions{
+				Id:            5112910,
+				Contributions: []hardcover.DefaultEditionsDefault_cover_editionEditionsContributions{{Contributions: author}},
+			},
+		},
+	}
+
+	popularity := func(editionID int64, title string) float64 {
+		rsc, err := mapHardcoverToWorkResource(context.Background(), hardcover.EditionInfo{Id: editionID, Title: title}, work)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5112910), rsc.BestBookID)
+		return rsc.Books[0].AverageRating * float64(rsc.Books[0].RatingCount)
+	}
+
+	translation := popularity(1988276, "El héroe de las mil caras")
+	best := popularity(5112910, "The Hero with a Thousand Faces")
+	assert.Greater(t, best, translation)
 }
