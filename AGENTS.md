@@ -22,8 +22,10 @@ namespace. The two are independent; do not conflate them.
 
 ## BryanLabs customizations
 
-Three commits on top of upstream (current branch: `fix/hardcover-search-ids-int64`,
-merged into `main`):
+Commits on top of upstream. The deployed image is built from
+`fix/hardcover-monitor-best-edition`, which stacks on `fix/hardcover-search-ids-int64`;
+neither is merged into `main`. The image is pinned by digest in bare-metal
+`cluster/media-suite/rreading-glasses-hardcover/deployment.yaml`.
 
 1. **Throttle raised to 30 req/s** (`89e836f`): `internal/controller.go`
    `NewUpstream()` raised the ticker from 3 req/s to 30 req/s. Background worker
@@ -40,6 +42,17 @@ merged into `main`):
 3. **ALLOW_PENDING_BOOKS env var** (`29ca600`): `cmd/rghc/main.go`,
    `internal/hardcover.go`. Adds a safety-net env var (defaults true) so that if
    upstream re-adds pending book filtering, BryanLabs deployments are not disrupted.
+
+4. **Best edition wins Readarr's pick** (`e84a098`): `internal/hardcover.go`. Readarr
+   monitors the edition with the highest votes times rating, and every edition carries
+   the work's ratings, so they tied and the lowest edition ID won, often a translation
+   (The Hero with a Thousand Faces was added as "El héroe de las mil caras"). The
+   `BestBookId` edition now gets one extra vote. Books already in Bookshelf keep their
+   monitored edition; change it with `PUT /api/v1/book/{id}` and an `editions` list.
+
+Local builds need `CGO_ENABLED=0` (the Mac's linker rejects the macOS 27 SDK), and
+`env -u HARDCOVER_API_KEY` so the live-API tests skip. `TestMergedWorks`,
+`TestQueryBuilderMultipleQueries` and the Postgres tests fail on this branch already.
 
 **WIP stash**: `stash@{0}` on branch `feat/allow-pending-books-isbn-search` contains
 uncommitted work titled "WIP: remove isbnSearchKey context (pre-INF-search-fix)". Do not
@@ -86,12 +99,12 @@ Request flow (Hardcover mode):
 ## Build & deploy
 
 ```bash
-# Build AMD64 image (cloud builder may be broken; fall back to local multiarch-builder)
+# Build AMD64 image on worker1, then pin the new digest in bare-metal
 docker buildx build \
-  --builder cloud-bryanlabs-builder \
+  --builder worker1 \
   --platform linux/amd64 \
   --build-arg RGPATH=./cmd/rghc \
-  -t ghcr.io/bryanlabs/rreading-glasses:hardcover \
+  -t ghcr.io/bryanlabs/rreading-glasses:hardcover-<sha> \
   --push .
 ```
 
