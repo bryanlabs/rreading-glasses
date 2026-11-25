@@ -34,12 +34,28 @@ type batchedgqlclient struct {
 	every     time.Duration  // every controls how often requests are flushed.
 	metrics   *gqlMetrics    // metrics tracks batches and queries sent.
 
+	paced       bool      // paced spaces batches by every per query and retries 429s.
+	pausedUntil time.Time // pausedUntil holds flushes back after a 429.
+
 	wrapped graphql.Client
 }
 
 // NewBatchedGraphQLClient creates a batching GraphQL client. Queries are
 // accumulated and executed regularly accurding to the given rate.
 func NewBatchedGraphQLClient(url string, client *http.Client, every time.Duration, batchSize int, reg *prometheus.Registry) (graphql.Client, error) {
+	return newBatchedGraphQLClient(url, client, every, batchSize, false, reg)
+}
+
+// NewPacedGraphQLClient is a batching client for upstreams that count every
+// top-level query against their rate limit, as Hardcover does (a batch of 5
+// costs 5). The flusher waits every per query sent, so the upstream sees at
+// most one query per every however the queries are batched, and a batch
+// refused with 429 goes back on the queue instead of failing its callers.
+func NewPacedGraphQLClient(url string, client *http.Client, every time.Duration, batchSize int, reg *prometheus.Registry) (graphql.Client, error) {
+	return newBatchedGraphQLClient(url, client, every, batchSize, true, reg)
+}
+
+func newBatchedGraphQLClient(url string, client *http.Client, every time.Duration, batchSize int, paced bool, reg *prometheus.Registry) (graphql.Client, error) {
 	wrapped := graphql.NewClient(url, client)
 
 	c := &batchedgqlclient{
@@ -48,13 +64,18 @@ func NewBatchedGraphQLClient(url string, client *http.Client, every time.Duratio
 		queue:     []batchedQuery{},
 		metrics:   newGQLMetrics(reg),
 		every:     every,
+		paced:     paced,
 	}
 
 	go func() {
 		ctx := context.WithValue(context.Background(), middleware.RequestIDKey, fmt.Sprintf("batch-flush-%d", time.Now().Unix()))
 		for {
+			sent := c.flush(ctx)
+			if c.paced && sent > 1 {
+				time.Sleep(time.Duration(sent) * c.every)
+				continue
+			}
 			time.Sleep(c.every)
-			c.flush(ctx)
 		}
 	}()
 
@@ -82,15 +103,15 @@ func NewBatchedGraphQLClient(url string, client *http.Client, every time.Duratio
 // flush pops the oldest batchedQuery off the queue and executes it.
 // Individualized errors are returned to listeners if possible, so one query
 // can fail without the entire batch failing. The whole batch can still fail in
-// other cases, e.g. 4XX response codes.
-func (c *batchedgqlclient) flush(ctx context.Context) {
+// other cases, e.g. 4XX response codes. It returns how many queries it sent.
+func (c *batchedgqlclient) flush(ctx context.Context) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.metrics.batchesWaitingSet(len(c.queue))
 
-	if len(c.queue) == 0 {
-		return // Nothing to do yet.
+	if len(c.queue) == 0 || time.Now().Before(c.pausedUntil) {
+		return 0 // Nothing to do yet.
 	}
 
 	// Take our oldest batch off the queue.
@@ -103,7 +124,7 @@ func (c *batchedgqlclient) flush(ctx context.Context) {
 	query, vars, err := batch.qb.build()
 	if err != nil {
 		Log(ctx).Error("unable to build query", "err", err)
-		return
+		return 0
 	}
 
 	data := map[string]any{}
@@ -123,6 +144,12 @@ func (c *batchedgqlclient) flush(ctx context.Context) {
 		defer cancel()
 
 		err := c.wrapped.MakeRequest(ctx, req, resp)
+
+		if c.paced && err != nil && strings.Contains(err.Error(), "returned error 429") && batch.attempts < _maxRateLimitRetries {
+			Log(ctx).Warn("batch rate limited, requeueing", "count", len(batch.subscribers), "attempt", batch.attempts+1)
+			c.requeue(batch)
+			return
+		}
 
 		// Extract any field-level errors, and return them to their
 		// subscribers. We can ignore the top-level err in this case, because
@@ -159,6 +186,27 @@ func (c *batchedgqlclient) flush(ctx context.Context) {
 			sub.respC <- sonic.ConfigStd.Unmarshal(byt, &sub.resp.Data)
 		}
 	}(batch)
+
+	return len(batch.subscribers)
+}
+
+// _maxRateLimitRetries bounds how often a paced client resends a batch the
+// upstream refused with 429.
+const _maxRateLimitRetries = 4
+
+// _rateLimitPause is how long a paced client holds every flush after a 429.
+// Hardcover's burst bucket refills within about 10 seconds.
+var _rateLimitPause = 12 * time.Second
+
+// requeue puts a rate-limited batch back at the front of the queue and holds
+// flushes until the upstream's bucket has refilled.
+func (c *batchedgqlclient) requeue(batch batchedQuery) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	batch.attempts++
+	c.queue = append([]batchedQuery{batch}, c.queue...)
+	c.pausedUntil = time.Now().Add(_rateLimitPause)
 }
 
 // MakeRequest implements graphql.Client.
@@ -253,6 +301,7 @@ type queryBuilder struct {
 type batchedQuery struct {
 	qb          *queryBuilder
 	subscribers map[string]*subscription
+	attempts    int
 }
 
 // _fragments holds string representations of fragment nodes since they are static.

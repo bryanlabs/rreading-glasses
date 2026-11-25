@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -388,6 +389,104 @@ func TestBatchingOverflow(t *testing.T) {
 	assert.NoError(t, err2)
 
 	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestPacedRetriesRateLimit(t *testing.T) {
+	_rateLimitPause = 100 * time.Millisecond
+	t.Cleanup(func() { _rateLimitPause = 12 * time.Second })
+
+	calls := atomic.Int32{}
+	client := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if calls.Add(1) <= 2 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       io.NopCloser(strings.NewReader(`{"data":null}`)),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`{"data": {}, "errors": []}`)),
+			}, nil
+		}),
+	}
+
+	gql, err := NewPacedGraphQLClient("https://foo.com", client, 20*time.Millisecond, 5, nil)
+	require.NoError(t, err)
+
+	_, err = gr.GetBook(t.Context(), gql, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(3), calls.Load())
+}
+
+func TestPacedGivesUpOnRateLimit(t *testing.T) {
+	_rateLimitPause = 10 * time.Millisecond
+	t.Cleanup(func() { _rateLimitPause = 12 * time.Second })
+
+	calls := atomic.Int32{}
+	client := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"data":null}`)),
+			}, nil
+		}),
+	}
+
+	gql, err := NewPacedGraphQLClient("https://foo.com", client, 10*time.Millisecond, 5, nil)
+	require.NoError(t, err)
+
+	_, err = gr.GetBook(t.Context(), gql, 1)
+	assert.Error(t, err)
+	assert.Equal(t, int32(_maxRateLimitRetries+1), calls.Load())
+}
+
+func TestPacedSpacesByQueryCount(t *testing.T) {
+	type send struct {
+		at      time.Time
+		queries int
+	}
+	var mu sync.Mutex
+	var sent []send
+	client := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			sent = append(sent, send{time.Now(), len(body.Variables)})
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`{"data": {}, "errors": []}`)),
+			}, nil
+		}),
+	}
+
+	every := 50 * time.Millisecond
+	gql, err := NewPacedGraphQLClient("https://foo.com", client, every, 3, nil)
+	require.NoError(t, err)
+
+	wg := sync.WaitGroup{}
+	for i := range 6 {
+		wg.Go(func() { _, _ = gr.GetBook(t.Context(), gql, int64(i+1)) })
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	total := 0
+	for i, s := range sent {
+		total += s.queries
+		if i == 0 {
+			continue
+		}
+		prev := sent[i-1]
+		assert.GreaterOrEqual(t, s.at.Sub(prev.at), time.Duration(max(prev.queries, 1))*every-5*time.Millisecond)
+	}
+	assert.Equal(t, 6, total)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

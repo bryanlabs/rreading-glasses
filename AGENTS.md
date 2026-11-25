@@ -50,6 +50,16 @@ neither is merged into `main`. The image is pinned by digest in bare-metal
    `BestBookId` edition now gets one extra vote. Books already in Bookshelf keep their
    monitored edition; change it with `PUT /api/v1/book/{id}` and an `editions` list.
 
+5. **Hardcover queries paced per query** (`fix/hardcover-query-pacing`):
+   `internal/graphql.go` `NewPacedGraphQLClient`, `cmd/rghc/main.go`. Hardcover
+   charges each top-level query in a batch against its 60 a minute, burst 10
+   limit (a batch of 5 costs 5, measured 2026-11-25), so one batch a second
+   asked for up to 300 a minute and new-author searches failed with 429, which
+   made Seerr book requests time out. The client now waits 1.2 s per query sent
+   (50 a minute, leaving the rest of the shared token to Book Chat and Seerr)
+   and puts a 429'd batch back on the queue, holding flushes 12 s, up to 4
+   times.
+
 Local builds need `CGO_ENABLED=0` (the Mac's linker rejects the macOS 27 SDK), and
 `env -u HARDCOVER_API_KEY` so the live-API tests skip. `TestMergedWorks`,
 `TestQueryBuilderMultipleQueries` and the Postgres tests fail on this branch already.
@@ -119,8 +129,9 @@ in the deployment secret before then.
 
 - **WIP stash**: `stash@{0}` on `feat/allow-pending-books-isbn-search` is unfinished
   work on ISBN search context. Check intent before dropping.
-- **Throttle is now 30 req/s**: upstream default was 3 req/s. If Hardcover starts
-  rate-limiting, dial back the ticker in `NewUpstream()` in `internal/controller.go`.
+- **Hardcover pacing lives in the GraphQL client**, not in `NewUpstream()` (that
+  ticker is unused by the Hardcover binary). If 429s return, lower the per-query
+  rate in `cmd/rghc/main.go`; remember Book Chat and Seerr share the token.
 - **Search IDs fix is not yet upstream**: if you rebase onto upstream, `f31b915` must be
   reapplied or searches will 500.
 - **Memory is auto-limited to 85% of available**: set a container memory limit in the
