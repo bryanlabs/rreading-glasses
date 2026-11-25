@@ -31,8 +31,13 @@ type batchedgqlclient struct {
 
 	batchSize int            // batchSize is the max number of queries per batch.
 	queue     []batchedQuery // queue contains spillover in cases where we've accumulated more queries than our batch size allows.
-	every     time.Duration  // every controls how often requests are flushed.
-	metrics   *gqlMetrics    // metrics tracks batches and queries sent.
+
+	// background holds a paced client's queries from background work
+	// (author refreshes, denormalization). They go out only when queue is
+	// empty, so a big author's backlog never holds up a caller who is waiting.
+	background []batchedQuery
+	every      time.Duration // every controls how often requests are flushed.
+	metrics    *gqlMetrics   // metrics tracks batches and queries sent.
 
 	paced       bool      // paced spaces batches by every per query and retries 429s.
 	pausedUntil time.Time // pausedUntil holds flushes back after a 429.
@@ -108,15 +113,24 @@ func (c *batchedgqlclient) flush(ctx context.Context) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.metrics.batchesWaitingSet(len(c.queue))
+	c.metrics.batchesWaitingSet(len(c.queue) + len(c.background))
 
-	if len(c.queue) == 0 || time.Now().Before(c.pausedUntil) {
-		return 0 // Nothing to do yet.
+	if time.Now().Before(c.pausedUntil) {
+		return 0 // Rate limited.
 	}
 
-	// Take our oldest batch off the queue.
-	batch := c.queue[0]
-	c.queue = c.queue[1:]
+	// Take our oldest batch off the queue, then off the background queue.
+	var batch batchedQuery
+	switch {
+	case len(c.queue) > 0:
+		batch = c.queue[0]
+		c.queue = c.queue[1:]
+	case len(c.background) > 0:
+		batch = c.background[0]
+		c.background = c.background[1:]
+	default:
+		return 0 // Nothing to do yet.
+	}
 
 	c.metrics.batchesSentInc()
 	c.metrics.queriesSentAdd(int64(len(batch.subscribers)))
@@ -205,7 +219,11 @@ func (c *batchedgqlclient) requeue(batch batchedQuery) {
 	defer c.mu.Unlock()
 
 	batch.attempts++
-	c.queue = append([]batchedQuery{batch}, c.queue...)
+	if batch.background {
+		c.background = append([]batchedQuery{batch}, c.background...)
+	} else {
+		c.queue = append([]batchedQuery{batch}, c.queue...)
+	}
 	c.pausedUntil = time.Now().Add(_rateLimitPause)
 }
 
@@ -230,13 +248,20 @@ func (c *batchedgqlclient) enqueue(
 	defer c.mu.Unlock()
 
 	// Take the youngest batch if it isn't full yet, otherwise start a new batch.
-	if len(c.queue) == 0 || len(c.queue[len(c.queue)-1].subscribers) >= c.batchSize {
-		c.queue = append(c.queue, batchedQuery{
+	queue := &c.queue
+	background := c.paced && !foreground(ctx)
+	if background {
+		queue = &c.background
+	}
+
+	if len(*queue) == 0 || len((*queue)[len(*queue)-1].subscribers) >= c.batchSize {
+		*queue = append(*queue, batchedQuery{
 			qb:          newQueryBuilder(),
 			subscribers: map[string]*subscription{},
+			background:  background,
 		})
 	}
-	batch := c.queue[len(c.queue)-1]
+	batch := (*queue)[len(*queue)-1]
 
 	respC := make(chan error, 1)
 
@@ -302,6 +327,14 @@ type batchedQuery struct {
 	qb          *queryBuilder
 	subscribers map[string]*subscription
 	attempts    int
+	background  bool
+}
+
+// foreground reports whether ctx belongs to an HTTP request someone is
+// waiting on. Request IDs from middleware.RequestID look like
+// "host/prefix-000123"; background work sets its own IDs without a slash.
+func foreground(ctx context.Context) bool {
+	return strings.Contains(middleware.GetReqID(ctx), "/")
 }
 
 // _fragments holds string representations of fragment nodes since they are static.

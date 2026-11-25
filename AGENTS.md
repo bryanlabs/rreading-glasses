@@ -58,7 +58,9 @@ neither is merged into `main`. The image is pinned by digest in bare-metal
    made Seerr book requests time out. The client now waits 1.2 s per query sent
    (50 a minute, leaving the rest of the shared token to Book Chat and Seerr)
    and puts a 429'd batch back on the queue, holding flushes 12 s, up to 4
-   times.
+   times. Queries from an HTTP request someone is waiting on (request IDs with a
+   slash) go out before background work (author refreshes, denormalization),
+   so a big author's catalog load never delays a Seerr book request.
 
 Local builds need `CGO_ENABLED=0` (the Mac's linker rejects the macOS 27 SDK), and
 `env -u HARDCOVER_API_KEY` so the live-API tests skip. `TestMergedWorks`,

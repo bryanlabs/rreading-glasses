@@ -15,6 +15,7 @@ import (
 
 	"github.com/blampe/rreading-glasses/gr"
 	"github.com/blampe/rreading-glasses/hardcover"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vektah/gqlparser/v2/gqlerror"
@@ -487,6 +488,47 @@ func TestPacedSpacesByQueryCount(t *testing.T) {
 		assert.GreaterOrEqual(t, s.at.Sub(prev.at), time.Duration(max(prev.queries, 1))*every-5*time.Millisecond)
 	}
 	assert.Equal(t, 6, total)
+}
+
+func TestPacedServesForegroundFirst(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	client := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var body struct {
+				Variables map[string]any `json:"variables"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			for _, v := range body.Variables {
+				order = append(order, fmt.Sprint(v))
+			}
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`{"data": {}, "errors": []}`)),
+			}, nil
+		}),
+	}
+
+	gql, err := NewPacedGraphQLClient("https://foo.com", client, 30*time.Millisecond, 1, nil)
+	require.NoError(t, err)
+
+	bg := context.WithValue(t.Context(), middleware.RequestIDKey, "refresh-author-1")
+	fg := context.WithValue(t.Context(), middleware.RequestIDKey, "host/abc-000001")
+
+	wg := sync.WaitGroup{}
+	for i := range 4 {
+		wg.Go(func() { _, _ = gr.GetBook(bg, gql, int64(100+i)) })
+	}
+	time.Sleep(10 * time.Millisecond)
+	wg.Go(func() { _, _ = gr.GetBook(fg, gql, 1) })
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, order, 5)
+	assert.Contains(t, order[:2], "1", "the waiting caller's query should jump the background backlog")
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
